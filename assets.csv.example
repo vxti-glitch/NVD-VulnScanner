@@ -1,0 +1,6 @@
+host,vendor,product,version
+WS-FINANCE-01,adobe,acrobat_reader,2020.001.30005
+WS-HR-02,apache,log4j,2.14.0
+SRV-WEB-01,apache,http_server,2.4.49
+SRV-DB-01,oracle,mysql,5.7.35
+WS-OPS-03,putty,putty,0.73
