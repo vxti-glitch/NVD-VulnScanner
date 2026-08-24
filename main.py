@@ -47,6 +47,17 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # CLI argument parser
 # ---------------------------------------------------------------------------
+def _cvss_threshold(value: str) -> float:
+    try:
+        score = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("threshold must be a number") from exc
+
+    if not 0.0 <= score <= 10.0:
+        raise argparse.ArgumentTypeError("threshold must be between 0.0 and 10.0")
+    return score
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nvd-vulnscanner",
@@ -87,7 +98,7 @@ Examples:
     parser.add_argument(
         "--threshold",
         metavar="SCORE",
-        type=float,
+        type=_cvss_threshold,
         default=0.0,
         help=(
             "Minimum CVSS base score to include in the report (0.0–10.0). "
