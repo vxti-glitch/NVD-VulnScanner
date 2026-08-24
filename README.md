@@ -7,7 +7,7 @@
 ![Async](https://img.shields.io/badge/I%2FO-Async_aiohttp-009688?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-22A7F0?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey?style=flat-square)
-![Status](https://img.shields.io/badge/Status-Production--Ready-27AE60?style=flat-square)
+![Status](https://img.shields.io/badge/Status-Portfolio--Ready-27AE60?style=flat-square)
 
 ---
 
@@ -23,7 +23,7 @@ The scanner constructs well-formed CPE 2.3 strings from inventory data, submits 
 
 ### The Cost of Reactive Security
 
-Organisations that operate without a continuous vulnerability management programme default to a reactive security posture. Threat actors routinely exploit publicly disclosed CVEs within 15 days of publication â€” before most IT teams complete manual patch cycles. The average cost of a data breach is $4.88 million USD (IBM Cost of a Data Breach Report, 2024), significantly higher for organisations lacking systematic patch and vulnerability workflows.
+Organisations that operate without a continuous vulnerability management programme default to a reactive security posture. Threat actors routinely exploit publicly disclosed CVEs within 15 days of publication, often before IT teams complete manual patch cycles. The average cost of a data breach is $4.88 million USD (IBM Cost of a Data Breach Report, 2024), significantly higher for organisations lacking systematic patch and vulnerability workflows.
 
 This tool directly addresses the following operational gaps:
 
@@ -36,7 +36,7 @@ This tool directly addresses the following operational gaps:
 | No audit-ready documentation | Timestamped PDF provides a repeatable, version-controlled scan artefact |
 | High cost of commercial scanners | Zero licensing cost; integrates with standard Python environments |
 
-Proactive vulnerability identification compresses Mean Time to Remediate (MTTR) by providing IT operations teams with structured, prioritised output instead of raw advisory feeds. KEV cross-referencing further tightens patch windows by surfacing vulnerabilities with confirmed real-world exploitation â€” the highest-urgency signal available from public threat intelligence.
+Proactive vulnerability identification compresses Mean Time to Remediate (MTTR) by providing IT operations teams with structured, prioritised output instead of raw advisory feeds. KEV cross-referencing further tightens patch windows by surfacing vulnerabilities with confirmed real-world exploitation, the highest-urgency signal available from public threat intelligence.
 
 ---
 
@@ -81,6 +81,7 @@ list[CVERecord] + KEVCatalog.enrich()
 - Software inventory simulation representing a realistic multi-host enterprise environment
 - External CSV inventory ingestion for live or CMDB-sourced asset data
 - Async NVD API v2 integration with authenticated (API key) and unauthenticated modes
+- Automatic NVD pagination so large CPE result sets are not silently truncated
 - CPE 2.3 string construction per software asset
 - CVSS scoring with v3.1 / v3.0 / v2.0 fallback hierarchy
 - Concurrent CISA KEV catalog fetch with O(1) CVE cross-reference lookup
@@ -89,7 +90,7 @@ list[CVERecord] + KEVCatalog.enrich()
 - CVSS score threshold filtering via CLI flag
 - Structured PDF output containing:
   - Timestamped report header with KEV catalog version
-  - Actively Exploited section (KEV matches only â€” highest priority)
+  - Actively Exploited section (KEV matches only, highest priority)
   - Executive summary with severity distribution and SLA guidance
   - Full asset inventory table with CPE strings
   - Vulnerability detail table sorted by priority rank (KEV > CRITICAL > HIGH > MEDIUM > LOW)
@@ -118,7 +119,7 @@ pip install -r requirements.txt
 
 ## How to Use
 
-### 1. Default Mode â€” Simulated Inventory
+### 1. Default Mode - Simulated Inventory
 
 Run the scanner without arguments. The built-in inventory of 10 enterprise software packages with known historic CVE exposure is used.
 
@@ -149,7 +150,7 @@ See `assets.csv.example` for a complete reference file.
 
 ---
 
-### 3. Authenticated Mode â€” Higher Rate Limit
+### 3. Authenticated Mode - Higher Rate Limit
 
 Register for a free NVD API key at [https://nvd.nist.gov/developers/request-an-api-key](https://nvd.nist.gov/developers/request-an-api-key). With a key, the rate limit increases from 5 to 50 requests per 30-second window, substantially reducing scan time on large inventories.
 
@@ -207,10 +208,10 @@ python main.py --inventory assets.csv --dry-run
 | Section | Content |
 |---|---|
 | Title Block | Scan timestamp, assets scanned, total CVEs, KEV matches, CISA catalog version |
-| Actively Exploited | KEV-matched CVEs only â€” ransomware flag, CISA due date, required action |
+| Actively Exploited | KEV-matched CVEs only, ransomware flag, CISA due date, required action |
 | Executive Summary | Severity distribution table with patch SLA per tier |
 | Asset Inventory | All scanned hosts with vendor, product, version, CPE string |
-| Full Vulnerability Detail | All CVEs sorted by priority rank â€” includes KEV flag, SLA days, CVSS vector |
+| Full Vulnerability Detail | All CVEs sorted by priority rank, includes KEV flag, SLA days, CVSS vector |
 | Remediation Reference | CISA BOD 22-01 and NIST SP 800-40r4 SLA guidance by classification |
 | Footer | Classification marking, data source attribution, generation timestamp |
 
@@ -234,7 +235,7 @@ The client enforces these limits via `asyncio.Semaphore` and per-request sleep. 
 - CPE string accuracy depends on the vendor and product naming conventions indexed by NVD. Software not indexed under the queried vendor/product name returns zero results. Manual CPE validation via the NVD CPE Dictionary (`https://nvd.nist.gov/products/cpe/search`) is recommended for production deployments.
 - The tool performs read-only API queries. It does not perform active network scanning, port enumeration, or service fingerprinting.
 - CVE data reflects the NVD dataset at query time. NVD processing latency can delay the appearance of newly disclosed CVEs by 24-72 hours after publication.
-- CISA KEV catalog availability depends on CISA infrastructure. A fetch failure does not abort the scan â€” NVD data remains valid without KEV enrichment.
+- CISA KEV catalog availability depends on CISA infrastructure. A fetch failure does not abort the scan; NVD data remains valid without KEV enrichment.
 
 ---
 
@@ -242,19 +243,19 @@ The client enforces these limits via `asyncio.Semaphore` and per-request sleep. 
 
 ```
 NVD-VulnScanner/
-â”œâ”€â”€ main.py               # CLI entrypoint â€” async orchestration pipeline
-â”œâ”€â”€ vuln_scanner.py       # Standalone legacy version (synchronous, single-file)
-â”œâ”€â”€ scanner/
-â”‚   â”œâ”€â”€ __init__.py
-â”‚   â”œâ”€â”€ models.py         # Core dataclasses: SoftwareAsset, CVERecord, KEVEntry
-â”‚   â”œâ”€â”€ inventory.py      # Asset loading: CSV and simulated inventory
-â”‚   â”œâ”€â”€ nvd_client.py     # Async NVD API v2 client with rate-limit management
-â”‚   â”œâ”€â”€ cisa_kev.py       # CISA KEV catalog fetch, index, and CVE enrichment
-â”‚   â””â”€â”€ report.py         # PDF risk report generation via ReportLab
-â”œâ”€â”€ requirements.txt      # Python dependencies
-â”œâ”€â”€ assets.csv.example    # Reference CSV inventory format
-â”œâ”€â”€ reports/              # PDF output directory (auto-created at runtime)
-â””â”€â”€ README.md
+|-- main.py               # CLI entrypoint, async orchestration pipeline
+|-- scanner/
+|   |-- __init__.py
+|   |-- models.py         # Core dataclasses: SoftwareAsset, CVERecord, KEVEntry
+|   |-- inventory.py      # Asset loading: CSV and simulated inventory
+|   |-- nvd_client.py     # Async NVD API v2 client with rate-limit management
+|   |-- cisa_kev.py       # CISA KEV catalog fetch, index, and CVE enrichment
+|   `-- report.py         # PDF risk report generation via ReportLab
+|-- tests/
+|-- requirements.txt      # Python dependencies
+|-- assets.csv.example    # Reference CSV inventory format
+|-- reports/              # PDF output directory (auto-created at runtime)
+`-- README.md
 ```
 
 ---
@@ -267,8 +268,8 @@ MIT License. See `LICENSE` for full terms.
 
 ## Data Sources
 
-- **National Vulnerability Database (NVD)** â€” NIST. [https://nvd.nist.gov](https://nvd.nist.gov)
-- **CISA Known Exploited Vulnerabilities Catalog** â€” CISA. [https://www.cisa.gov/known-exploited-vulnerabilities-catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
-- **Common Platform Enumeration (CPE)** â€” MITRE / NIST. [https://cpe.mitre.org](https://cpe.mitre.org)
-- **Common Vulnerability Scoring System (CVSS)** â€” FIRST.org. [https://www.first.org/cvss](https://www.first.org/cvss)
-- **CISA Binding Operational Directive 22-01** â€” [https://www.cisa.gov/binding-operational-directive-22-01](https://www.cisa.gov/binding-operational-directive-22-01)
+- **National Vulnerability Database (NVD)** - NIST. [https://nvd.nist.gov](https://nvd.nist.gov)
+- **CISA Known Exploited Vulnerabilities Catalog** - CISA. [https://www.cisa.gov/known-exploited-vulnerabilities-catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+- **Common Platform Enumeration (CPE)** - MITRE / NIST. [https://cpe.mitre.org](https://cpe.mitre.org)
+- **Common Vulnerability Scoring System (CVSS)** - FIRST.org. [https://www.first.org/cvss](https://www.first.org/cvss)
+- **CISA Binding Operational Directive 22-01** - [https://www.cisa.gov/binding-operational-directive-22-01](https://www.cisa.gov/binding-operational-directive-22-01)

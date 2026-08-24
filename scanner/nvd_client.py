@@ -224,32 +224,73 @@ class NVDClient:
     async def _fetch_with_retry(
         self, asset: SoftwareAsset
     ) -> list[CVERecord]:
-        """Execute the NVD query with exponential backoff retry.
+        """Fetch every NVD result page for one asset.
 
-        Retries on:
-        - HTTP 429 (rate limited — conservative: we wait and retry)
-        - HTTP 503 (NVD maintenance / temporary unavailability)
-        - aiohttp.ClientError (network-level failures)
-
-        Does NOT retry on:
-        - HTTP 400, 404 — structural problems with the CPE string
-        - HTTP 401 — invalid API key
-        - HTTP 403 — access denied
+        The NVD API paginates CVE results. A popular product/version can return
+        more rows than ``resultsPerPage``, so keep advancing ``startIndex`` until
+        the response reports no more pages.
         """
         cpe = asset.cpe_string
-        params = {
-            "cpeName": cpe,
-            "resultsPerPage": self._max_results,
-            "startIndex": 0,
-        }
+        start_index = 0
+        total_results: int | None = None
+        records: list[CVERecord] = []
+        seen_cve_ids: set[str] = set()
 
+        while total_results is None or start_index < total_results:
+            params = {
+                "cpeName": cpe,
+                "resultsPerPage": self._max_results,
+                "startIndex": start_index,
+            }
+
+            body = await self._fetch_page_with_retry(asset, cpe, params)
+            if body is None:
+                break
+
+            page_records = self._parse_response(body, asset)
+            for record in page_records:
+                if record.cve_id in seen_cve_ids:
+                    continue
+                seen_cve_ids.add(record.cve_id)
+                records.append(record)
+
+            vulnerabilities = body.get("vulnerabilities", [])
+            page_size = int(body.get("resultsPerPage") or len(vulnerabilities) or self._max_results)
+            total_results = int(body.get("totalResults") or len(records))
+
+            if not vulnerabilities or page_size <= 0:
+                break
+
+            start_index += page_size
+
+        log.info(
+            "  -> %d unique CVE(s) found for %s %s",
+            len(records),
+            asset.product,
+            asset.version,
+        )
+        return records
+
+    async def _fetch_page_with_retry(
+        self,
+        asset: SoftwareAsset,
+        cpe: str,
+        params: dict[str, object],
+    ) -> dict[str, Any] | None:
+        """Execute one NVD page request with exponential backoff retry.
+
+        Retries on HTTP 429/503 and network-level failures. Other 4xx errors
+        are treated as non-retryable because they usually indicate a malformed
+        CPE string or invalid credentials.
+        """
         for attempt in range(_RETRY_ATTEMPTS):
             try:
                 log.info(
-                    "Querying NVD: %s %s (CPE: %s, attempt %d/%d)",
+                    "Querying NVD: %s %s (CPE: %s, startIndex=%s, attempt %d/%d)",
                     asset.vendor,
                     asset.product,
                     cpe,
+                    params.get("startIndex", 0),
                     attempt + 1,
                     _RETRY_ATTEMPTS,
                 )
@@ -259,21 +300,10 @@ class NVDClient:
                     _NVD_BASE_URL, params=params
                 ) as resp:
                     if resp.status == 200:
-                        body = await resp.json(content_type=None)
-                        records = self._parse_response(body, asset)
-                        log.info(
-                            "  -> %d CVE(s) found for %s %s",
-                            len(records),
-                            asset.product,
-                            asset.version,
-                        )
-                        return records
+                        return await resp.json(content_type=None)
 
                     if resp.status in (429, 503):
-                        delay = min(
-                            _RETRY_BASE_DELAY * (2**attempt),
-                            _RETRY_MAX_DELAY,
-                        )
+                        delay = self._retry_delay(attempt, resp.headers.get("Retry-After"))
                         log.warning(
                             "HTTP %d from NVD for %s — retrying in %.1fs",
                             resp.status,
@@ -291,13 +321,10 @@ class NVDClient:
                         cpe,
                         body_text[:200],
                     )
-                    return []
+                    return None
 
             except aiohttp.ClientError as exc:
-                delay = min(
-                    _RETRY_BASE_DELAY * (2**attempt),
-                    _RETRY_MAX_DELAY,
-                )
+                delay = self._retry_delay(attempt)
                 log.warning(
                     "Network error querying NVD for %s (attempt %d): %s — "
                     "retrying in %.1fs",
@@ -315,14 +342,23 @@ class NVDClient:
                     cpe,
                     exc,
                 )
-                return []
+                return None
 
         log.error(
-            "All %d attempts exhausted for CPE: %s — skipping asset.",
+            "All %d attempts exhausted for CPE: %s — skipping remaining pages.",
             _RETRY_ATTEMPTS,
             cpe,
         )
-        return []
+        return None
+
+    @staticmethod
+    def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
+        if retry_after:
+            try:
+                return min(float(retry_after), _RETRY_MAX_DELAY)
+            except ValueError:
+                pass
+        return min(_RETRY_BASE_DELAY * (2**attempt), _RETRY_MAX_DELAY)
 
     @staticmethod
     def _parse_response(
