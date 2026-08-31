@@ -1,6 +1,4 @@
-"""
-main.py — NVD Automated Vulnerability & Asset Scanner
-======================================================
+"""CLI for the inventory-to-NVD/KEV candidate correlation helper.
 CLI entrypoint. Orchestrates:
   1. Asset inventory loading (CSV or simulated)
   2. Concurrent CISA KEV catalog fetch + NVD asset queries
@@ -30,6 +28,7 @@ from pathlib import Path
 import aiohttp
 
 from scanner.cisa_kev import KEVCatalog
+from scanner.fixtures import RecordedFixtureError, load_recorded_fixture
 from scanner.inventory import load_inventory
 from scanner.nvd_client import NVDClient
 from scanner.report import OUTPUT_DIR, generate_pdf_report
@@ -60,10 +59,10 @@ def _cvss_threshold(value: str) -> float:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="nvd-vulnscanner",
+        prog="nvd-inventory-correlator",
         description=(
-            "Automated Vulnerability & Asset Scanner — "
-            "correlates software inventory against NVD CVE and CISA KEV data."
+            "Inventory correlation helper for explicitly reviewed CPE mappings, "
+            "NVD CVE candidates, and CISA KEV context."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -112,6 +111,11 @@ Examples:
         default=OUTPUT_DIR,
         help="Output directory for PDF reports. Default: reports/",
     )
+    for severity, default in (("critical", 30), ("high", 60), ("medium", 90), ("low", 180)):
+        parser.add_argument(
+            f"--target-{severity}", type=int, default=default, metavar="DAYS",
+            help=f"Sample organizational {severity} target in days (default: {default}).",
+        )
     parser.add_argument(
         "--key",
         metavar="API_KEY",
@@ -131,6 +135,10 @@ Examples:
             "Useful for verifying CSV format before a full scan."
         ),
     )
+    parser.add_argument(
+        "--offline-fixtures", metavar="DIR", type=Path, default=None,
+        help="Use recorded nvd_cve_page.json and cisa_kev.json without network access.",
+    )
     return parser
 
 
@@ -141,7 +149,7 @@ async def _run(args: argparse.Namespace) -> int:
     """Core async pipeline. Returns an exit code (0 = success)."""
 
     log.info("=" * 60)
-    log.info("NVD Automated Vulnerability & Asset Scanner v2")
+    log.info("NVD Inventory Correlation Helper")
     log.info("=" * 60)
 
     # ---- Step 1: Load inventory ------------------------------------------ #
@@ -155,7 +163,7 @@ async def _run(args: argparse.Namespace) -> int:
         return 1
 
     if not assets:
-        log.error("No assets found in inventory — nothing to scan.")
+        log.error("No inventory records found — nothing to correlate.")
         return 1
 
     log.info("Inventory: %d assets across %d host(s).", len(assets), len({a.host for a in assets}))
@@ -167,35 +175,45 @@ async def _run(args: argparse.Namespace) -> int:
             log.info("  %s", a)
         return 0
 
-    # ---- Step 2: Resolve API key ------------------------------------------ #
-    api_key: str | None = args.key or os.environ.get("NVD_API_KEY")
-    if not api_key:
-        log.warning(
-            "NVD_API_KEY not set. Operating at public rate limit "
-            "(5 requests / 30 seconds). Scan of %d assets will take "
-            "approximately %.0f seconds.",
-            len(assets),
-            len(assets) * 6.0,
-        )
-    else:
-        log.info("NVD API key detected — authenticated rate limit active (50 req/30s).")
-
-    # ---- Step 3: Fetch KEV catalog + scan assets concurrently -------------- #
-    # The KEV catalog fetch and NVD queries use separate sessions because they
-    # hit different hosts with different headers.
-    async with NVDClient(api_key=api_key) as nvd_client:
-        # Run KEV catalog fetch concurrently with the first NVD request
-        # by creating a shared aiohttp session for the KEV fetch only.
-        kev_session = aiohttp.ClientSession(headers={"Accept": "application/json"})
-
+    if args.offline_fixtures:
         try:
-            # Fire KEV fetch and full NVD scan concurrently
-            kev_task = asyncio.create_task(KEVCatalog.fetch(kev_session))
-            cve_task = asyncio.create_task(nvd_client.scan_assets(assets))
+            nvd_payload = load_recorded_fixture(args.offline_fixtures / "nvd_cve_page.json")
+            kev_payload = load_recorded_fixture(args.offline_fixtures / "cisa_kev.json")
+            kev_catalog = KEVCatalog.from_payload(kev_payload)
+        except (RecordedFixtureError, ValueError) as exc:
+            log.error("Offline fixture validation failed: %s", exc)
+            return 1
+        cves = []
+        for asset in assets:
+            if asset.mapping_status == "matched":
+                cves.extend(NVDClient._parse_response(nvd_payload, asset))
+            else:
+                log.info("No CVE output for %s mapping: %s", asset.mapping_status, asset)
+    else:
+        # ---- Step 2: Resolve API key -------------------------------------- #
+        api_key: str | None = args.key or os.environ.get("NVD_API_KEY")
+        if not api_key:
+            reviewed_count = sum(a.mapping_status == "matched" for a in assets)
+            log.warning(
+                "NVD_API_KEY not set. Operating at public rate limit "
+                "(5 requests / 30 seconds). Correlation of %d reviewed mappings may take "
+                "approximately %.0f seconds.",
+                reviewed_count,
+                reviewed_count * 6.0,
+            )
+        else:
+            log.info("NVD API key detected — authenticated rate limit active (50 req/30s).")
 
-            kev_catalog, cves = await asyncio.gather(kev_task, cve_task)
-        finally:
-            await kev_session.close()
+        async with NVDClient(api_key=api_key) as nvd_client:
+            kev_session = aiohttp.ClientSession(headers={"Accept": "application/json"})
+            try:
+                kev_task = asyncio.create_task(KEVCatalog.fetch(kev_session))
+                cve_task = asyncio.create_task(nvd_client.scan_assets(assets))
+                kev_catalog, cves = await asyncio.gather(kev_task, cve_task)
+            finally:
+                await kev_session.close()
+
+    # ---- Step 3: Apply filters and enrichment ---------------------------- #
 
     # ---- Step 4: Apply CVSS threshold filter ------------------------------ #
     if args.threshold > 0.0:
@@ -223,11 +241,17 @@ async def _run(args: argparse.Namespace) -> int:
         kev_count=kev_match_count,
         kev_catalog_version=kev_catalog.catalog_version,
         output_dir=args.output,
+        organizational_targets={
+            "CRITICAL": args.target_critical,
+            "HIGH": args.target_high,
+            "MEDIUM": args.target_medium,
+            "LOW": args.target_low,
+        },
     )
 
     log.info("=" * 60)
-    log.info("Scan complete.")
-    log.info("  Total CVEs : %d", len(cves))
+    log.info("Correlation complete.")
+    log.info("  Candidate CVEs: %d", len(cves))
     log.info("  KEV matches: %d", kev_match_count)
     log.info("  Report     : %s", report_path.resolve())
     log.info("=" * 60)

@@ -1,26 +1,8 @@
-"""
-scanner.cisa_kev
-================
-CISA Known Exploited Vulnerabilities (KEV) catalog integration.
+"""CISA KEV catalog lookup for candidate-correlation context.
 
-Context (Penetration Tester perspective)
------------------------------------------
-CVSS score alone is an insufficient prioritisation signal. A CVSS 7.5
-vulnerability that has been actively exploited in ransomware campaigns
-this week is categorically more urgent than a CVSS 9.8 vulnerability
-for which no public exploit code exists.
-
-CISA's KEV catalog — mandated for U.S. federal agencies under Binding
-Operational Directive (BOD) 22-01 — provides exactly this signal: it
-lists vulnerabilities with confirmed, real-world exploitation evidence.
-Industry-wide adoption of the BOD 22-01 patch timelines is considered
-best practice:
-  - KEV vulnerabilities: patch within 14 days
-  - Non-KEV Critical (CVSS 9+): patch within 30 days
-
-This module fetches the KEV catalog asynchronously, builds an O(1)
-lookup index keyed by CVE ID, and provides a cross-reference function
-that enriches CVERecord objects with KEV metadata when a match exists.
+BOD 22-01 is binding on U.S. federal civilian executive branch agencies.
+Other organizations can use KEV as prioritization guidance under their own
+authorized policies. Every matched record retains the entry's actual dueDate.
 
 Catalog source:
   https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
@@ -46,6 +28,10 @@ _KEV_URL = (
     "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 )
 _KEV_TIMEOUT = 20  # seconds
+
+
+class FixtureDataError(ValueError):
+    """Raised when a recorded API fixture is malformed or outside its review window."""
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +82,20 @@ class KEVCatalog:
                     entry.due_date,
                 )
         return cves, matched
+
+    @classmethod
+    def from_payload(cls, body: dict[str, Any]) -> "KEVCatalog":
+        """Validate a recorded/live KEV payload before constructing a catalog."""
+        if not isinstance(body, dict):
+            raise FixtureDataError("KEV payload must be an object")
+        raw = body.get("vulnerabilities")
+        version = body.get("catalogVersion")
+        if not isinstance(raw, list) or not isinstance(version, str) or not version.strip():
+            raise FixtureDataError("KEV payload is missing catalogVersion or vulnerabilities")
+        entries = cls._parse(raw)
+        if raw and not entries:
+            raise FixtureDataError("KEV payload contains no usable CVE records")
+        return cls(entries=entries, catalog_version=version)
 
     @classmethod
     async def fetch(
@@ -152,15 +152,18 @@ class KEVCatalog:
             )
             return cls._empty()
 
-        entries = cls._parse(body.get("vulnerabilities", []))
-        version = body.get("catalogVersion", "unknown")
+        try:
+            catalog = cls.from_payload(body)
+        except FixtureDataError as exc:
+            log.warning("Malformed CISA KEV catalog: %s — KEV status is unknown.", exc)
+            return cls._empty()
 
         log.info(
             "CISA KEV catalog loaded: %d entries (version %s).",
-            len(entries),
-            version,
+            catalog.total_entries,
+            catalog.catalog_version,
         )
-        return cls(entries=entries, catalog_version=version)
+        return catalog
 
     # ------------------------------------------------------------------
     # Private helpers

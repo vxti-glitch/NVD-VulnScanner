@@ -1,0 +1,20 @@
+{
+  "recorded_at": "2026-08-31",
+  "source_url": "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2021-44228",
+  "payload": {
+    "resultsPerPage": 1,
+    "startIndex": 0,
+    "totalResults": 1,
+    "vulnerabilities": [
+      {
+        "cve": {
+          "id": "CVE-2021-44228",
+          "descriptions": [{"lang": "en", "value": "Recorded fixture description."}],
+          "published": "2021-12-10T10:15:09.143",
+          "lastModified": "2025-10-21T19:01:28.377",
+          "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 10.0, "baseSeverity": "CRITICAL", "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H"}}]}
+        }
+      }
+    ]
+  }
+}

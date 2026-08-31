@@ -1,17 +1,4 @@
-"""
-scanner.inventory
-=================
-Asset inventory loading — CSV-based and built-in simulated.
-
-Design notes (Backend Architect)
----------------------------------
-- CSV loading is decoupled from the NVD client: the inventory layer is
-  purely I/O and data-shaping; it has no knowledge of vulnerability APIs.
-- The simulated inventory targets historically CVE-dense software versions
-  selected to produce meaningful NVD results during portfolio demos.
-- `load_inventory()` is the single entry point; callers do not need to
-  choose between CSV and simulated — the function does that automatically.
-"""
+"""CSV inventory loading with explicit, reviewable CPE mappings."""
 
 from __future__ import annotations
 
@@ -29,27 +16,14 @@ log = logging.getLogger(__name__)
 # workstations, web servers, and database servers. Versions are deliberately
 # historic to guarantee NVD coverage during demonstrations.
 # ---------------------------------------------------------------------------
-_SIMULATED: list[dict[str, str]] = [
+_SIMULATED: list[dict[str, object]] = [
     # Remote code execution — Log4Shell (CVE-2021-44228)
-    {"host": "WS-HR-02",    "vendor": "apache",       "product": "log4j",            "version": "2.14.0"},
+    {"host": "LAB-WS-01", "vendor": "Apache", "product": "Log4j", "version": "2.14.0", "reviewed_cpe": "cpe:2.3:a:apache:log4j:2.14.0:*:*:*:*:*:*:*", "mapping_source": "NVD CPE Dictionary review"},
     # Path traversal — Apache 2.4.49 (CVE-2021-41773)
-    {"host": "SRV-WEB-01",  "vendor": "apache",       "product": "http_server",      "version": "2.4.49"},
+    {"host": "LAB-SRV-01", "vendor": "Example Vendor", "product": "Unmapped Product", "version": "1.0"},
     # OpenSSL heartbleed era
-    {"host": "SRV-WEB-01",  "vendor": "openssl",      "product": "openssl",          "version": "1.0.1"},
+    {"host": "LAB-WS-02", "vendor": "Example", "product": "Ambiguous Agent", "version": "2.0", "candidate_cpes": ("cpe:2.3:a:example:agent:2.0:*:*:*:*:*:*:*", "cpe:2.3:a:example:agent_pro:2.0:*:*:*:*:*:*:*")},
     # Spring4Shell (CVE-2022-22965)
-    {"host": "SRV-APP-01",  "vendor": "springproject", "product": "spring_framework", "version": "5.3.17"},
-    # Adobe Acrobat Reader historic CVEs
-    {"host": "WS-FINANCE-01","vendor": "adobe",        "product": "acrobat_reader",   "version": "2020.001.30005"},
-    # PHP 7.2.x multiple CVEs
-    {"host": "SRV-WEB-01",  "vendor": "php",          "product": "php",              "version": "7.2.0"},
-    # MySQL 5.7 privilege escalation vectors
-    {"host": "SRV-DB-01",   "vendor": "oracle",       "product": "mysql",            "version": "5.7.35"},
-    # PuTTY pre-0.75 stack overflow
-    {"host": "WS-OPS-03",   "vendor": "putty",        "product": "putty",            "version": "0.73"},
-    # Internet Explorer EOL CVEs
-    {"host": "WS-FINANCE-01","vendor": "microsoft",   "product": "internet_explorer", "version": "11.0"},
-    # 7-zip older version
-    {"host": "WS-OPS-03",   "vendor": "7-zip",        "product": "7-zip",            "version": "19.00"},
 ]
 
 
@@ -112,14 +86,18 @@ def load_inventory_from_csv(csv_path: Path) -> list[SoftwareAsset]:
                 skipped += 1
                 continue
 
-            assets.append(
-                SoftwareAsset(
-                    host=host,
-                    vendor=vendor,
-                    product=product,
-                    version=version,
-                )
+            reviewed_cpe = (row.get("reviewed_cpe") or "").strip() or None
+            mapping_source = (row.get("mapping_source") or "").strip() or None
+            candidates = tuple(
+                item.strip()
+                for item in (row.get("candidate_cpes") or "").split("|")
+                if item.strip()
             )
+            assets.append(SoftwareAsset(
+                host=host, vendor=vendor, product=product, version=version,
+                reviewed_cpe=reviewed_cpe, mapping_source=mapping_source,
+                candidate_cpes=candidates,
+            ))
 
     log.info(
         "CSV inventory loaded: %d assets from %s (%d rows skipped).",
@@ -131,10 +109,10 @@ def load_inventory_from_csv(csv_path: Path) -> list[SoftwareAsset]:
 
 
 def load_simulated_inventory() -> list[SoftwareAsset]:
-    """Return the built-in simulated enterprise inventory."""
+    """Return a small synthetic mapping-state fixture inventory."""
     assets = [SoftwareAsset(**r) for r in _SIMULATED]
     log.info(
-        "Simulated inventory loaded: %d assets across %d hosts.",
+        "Synthetic fixture inventory loaded: %d records across %d hosts.",
         len(assets),
         len({a.host for a in assets}),
     )
@@ -166,5 +144,5 @@ def load_inventory(csv_path: Path | None = None) -> list[SoftwareAsset]:
         return load_inventory_from_csv(default_csv)
 
     # Fall back to simulated inventory
-    log.info("No inventory file found — using built-in simulated inventory.")
+    log.info("No inventory file found — using built-in synthetic fixture inventory.")
     return load_simulated_inventory()

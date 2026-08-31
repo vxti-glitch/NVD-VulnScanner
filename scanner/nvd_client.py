@@ -1,8 +1,4 @@
-"""
-scanner.nvd_client
-==================
-Async NVD API v2 client with rate-limit-aware concurrency, exponential
-backoff retry, and CVSS version fallback hierarchy.
+"""NVD CVE API client for inventory records with reviewed CPE mappings.
 
 Design notes (Backend Architect)
 ---------------------------------
@@ -184,13 +180,18 @@ class NVDClient:
                 "Use: async with NVDClient(...) as client: ..."
             )
 
-        log.info("Starting async NVD scan — %d assets queued.", len(assets))
+        queryable = [asset for asset in assets if asset.mapping_status == "matched"]
+        skipped = len(assets) - len(queryable)
+        log.info(
+            "Starting NVD correlation — %d reviewed mapping(s) queued; %d unresolved/ambiguous skipped.",
+            len(queryable), skipped,
+        )
 
-        tasks = [self._query_asset(asset) for asset in assets]
+        tasks = [self._query_asset(asset) for asset in queryable]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_cves: list[CVERecord] = []
-        for asset, result in zip(assets, results):
+        for asset, result in zip(queryable, results):
             if isinstance(result, Exception):
                 log.error(
                     "Query failed for %s: %s",
@@ -203,7 +204,7 @@ class NVDClient:
         log.info(
             "NVD scan complete — %d CVE(s) found across %d asset(s).",
             len(all_cves),
-            len(assets),
+            len(queryable),
         )
         return all_cves
 
@@ -230,7 +231,10 @@ class NVDClient:
         more rows than ``resultsPerPage``, so keep advancing ``startIndex`` until
         the response reports no more pages.
         """
-        cpe = asset.cpe_string
+        if asset.mapping_status != "matched" or not asset.reviewed_cpe:
+            log.warning("Skipping %s because its CPE mapping is %s", asset, asset.mapping_status)
+            return []
+        cpe = asset.reviewed_cpe
         start_index = 0
         total_results: int | None = None
         records: list[CVERecord] = []
