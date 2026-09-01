@@ -1,7 +1,4 @@
-"""
-scanner.report
-==============
-PDF risk report generator using ReportLab.
+"""PDF candidate-correlation report generator using ReportLab.
 
 Report structure
 ----------------
@@ -77,6 +74,13 @@ SEVERITY_COLORS: dict[str, colors.HexColor] = {
     "MEDIUM": _C_MEDIUM,
     "LOW": _C_LOW,
     "UNKNOWN": _C_UNKNOWN,
+}
+
+DEFAULT_ORGANIZATIONAL_TARGETS = {
+    "CRITICAL": 30,
+    "HIGH": 60,
+    "MEDIUM": 90,
+    "LOW": 180,
 }
 
 
@@ -188,8 +192,9 @@ def _build_kev_section(
         Paragraph(
             "The following vulnerabilities have confirmed real-world exploitation evidence "
             "and are listed in the CISA Known Exploited Vulnerabilities (KEV) catalog. "
-            "CISA Binding Operational Directive 22-01 mandates patching within <b>14 days</b>. "
-            "Industry best practice applies the same timeline regardless of regulatory mandate.",
+            "Each row uses the entry-specific CISA due date. Binding Operational Directive "
+            "22-01 applies to U.S. federal civilian executive branch agencies; other "
+            "organizations may use KEV as prioritization guidance under their own policy.",
             styles["body"],
         )
     )
@@ -245,6 +250,7 @@ def _build_kev_section(
 def _build_summary_section(
     cves: list[CVERecord],
     kev_count: int,
+    organizational_targets: dict[str, int],
     styles: dict[str, ParagraphStyle],
     story: list,
 ) -> None:
@@ -258,14 +264,17 @@ def _build_summary_section(
         key = c.cvss_severity.upper()
         counts[key] = counts.get(key, 0) + 1
 
-    sla_map = {"CRITICAL": "30 days", "HIGH": "60 days", "MEDIUM": "90 days",
-               "LOW": "180 days", "UNKNOWN": "Manual review"}
+    target_map = {
+        severity: f"{organizational_targets[severity]} days"
+        if severity in organizational_targets else "Not configured"
+        for severity in counts
+    }
     color_map = {
         "CRITICAL": _C_CRITICAL, "HIGH": _C_HIGH, "MEDIUM": _C_MEDIUM,
         "LOW": _C_LOW, "UNKNOWN": _C_UNKNOWN,
     }
 
-    headers = ["Severity", "Count", "Patch SLA (non-KEV)", "Risk Guidance"]
+    headers = ["Severity", "Count", "Sample organization target", "Review guidance"]
     guidance = {
         "CRITICAL": "Immediate action — escalate to security team",
         "HIGH": "Patch within current change-management cycle",
@@ -277,7 +286,7 @@ def _build_summary_section(
     rows = [headers]
     row_style_commands = []
     for i, (sev, label_color) in enumerate(color_map.items(), start=1):
-        rows.append([sev, str(counts[sev]), sla_map[sev], guidance[sev]])
+        rows.append([sev, str(counts[sev]), target_map[sev], guidance[sev]])
         row_style_commands += [
             ("BACKGROUND", (0, i), (0, i), label_color),
             ("TEXTCOLOR",  (0, i), (0, i),
@@ -289,8 +298,8 @@ def _build_summary_section(
     rows.append([
         Paragraph("<b>KEV (Actively Exploited)</b>", styles["small"]),
         str(kev_count),
-        "14 days (CISA BOD 22-01)",
-        "Patch immediately — confirmed real-world exploitation",
+        "Use each KEV entry due date",
+        "Prioritize under applicable policy; authorized review required",
     ])
     kev_row_idx = len(rows) - 1
     row_style_commands += [
@@ -309,22 +318,25 @@ def _build_inventory_section(
     styles: dict[str, ParagraphStyle],
     story: list,
 ) -> None:
-    """Render the scanned asset inventory table."""
-    story.append(Paragraph("Scanned Asset Inventory", styles["section"]))
+    """Render inventory records and their explicit mapping state."""
+    story.append(Paragraph("Inventory and CPE Mapping Review", styles["section"]))
 
-    headers = ["Host", "Vendor", "Product", "Version", "CPE String"]
+    headers = ["Host", "Product", "Version", "Mapping", "Reviewed CPE / candidates"]
     rows = [headers]
     for a in assets:
         rows.append([
             Paragraph(a.host, styles["small"]),
-            Paragraph(a.vendor, styles["small"]),
-            Paragraph(a.product, styles["small"]),
+            Paragraph(f"{a.vendor} {a.product}", styles["small"]),
             Paragraph(a.version, styles["small"]),
-            Paragraph(a.cpe_string, styles["small"]),
+            Paragraph(a.mapping_status, styles["small"]),
+            Paragraph(
+                a.reviewed_cpe or "<br/>".join(a.candidate_cpes) or "No reviewed mapping",
+                styles["small"],
+            ),
         ])
 
     table = Table(
-        rows, colWidths=[32 * mm, 22 * mm, 30 * mm, 22 * mm, 64 * mm],
+        rows, colWidths=[28 * mm, 42 * mm, 22 * mm, 20 * mm, 58 * mm],
         repeatRows=1,
     )
     table.setStyle(_header_table_style([
@@ -335,6 +347,7 @@ def _build_inventory_section(
 
 def _build_cve_detail_section(
     cves: list[CVERecord],
+    organizational_targets: dict[str, int],
     styles: dict[str, ParagraphStyle],
     story: list,
 ) -> None:
@@ -358,7 +371,7 @@ def _build_cve_detail_section(
 
     headers = [
         "CVE ID", "Host", "Product", "Ver.", "CVSS", "Severity",
-        "KEV", "SLA", "Published", "Description",
+        "KEV", "Target", "Published", "Description",
     ]
     rows = [headers]
     row_style_commands = []
@@ -377,7 +390,14 @@ def _build_cve_detail_section(
             Paragraph(str(rec.cvss_score), styles["small"]),
             Paragraph(f"<b>{sev}</b>", styles["small"]),
             kev_tag,
-            Paragraph(f"{rec.sla_days}d", styles["small"]),
+            Paragraph(
+                rec.kev_entry.due_date if rec.kev_entry else (
+                    f"{rec.target_days(organizational_targets)}d"
+                    if rec.target_days(organizational_targets) is not None
+                    else "Not configured"
+                ),
+                styles["small"],
+            ),
             Paragraph(rec.published, styles["small"]),
             Paragraph(
                 rec.description[:200] + ("..." if len(rec.description) > 200 else ""),
@@ -414,20 +434,20 @@ def _build_cve_detail_section(
 
 
 def _build_remediation_section(
+    organizational_targets: dict[str, int],
     styles: dict[str, ParagraphStyle],
     story: list,
 ) -> None:
-    """Render the remediation SLA reference section."""
-    story.append(Paragraph("Remediation Priority Reference", styles["section"]))
+    """Render policy applicability and sample organizational targets."""
+    story.append(Paragraph("Prioritization Policy Reference", styles["section"]))
 
     sla_data = [
-        ["Classification",            "Patch SLA",   "Authority",           "Guidance"],
-        ["KEV — Ransomware Linked",   "14 days",     "CISA BOD 22-01",      "Isolate immediately if exploitation is confirmed. Escalate to incident response."],
-        ["KEV — Confirmed Exploited", "14 days",     "CISA BOD 22-01",      "Apply vendor patch or compensating control. Monitor threat intelligence feeds."],
-        ["CRITICAL (CVSS 9.0–10.0)",  "30 days",     "NIST SP 800-40r4",    "Patch in the current change cycle. Apply interim mitigations if patching is delayed."],
-        ["HIGH (CVSS 7.0–8.9)",       "60 days",     "NIST SP 800-40r4",    "Schedule within the next patch cycle. Review exploit availability."],
-        ["MEDIUM (CVSS 4.0–6.9)",     "90 days",     "Organisational SLA",  "Include in quarterly patch planning. Document accepted risk if deferred."],
-        ["LOW (CVSS 0.1–3.9)",        "180 days",    "Organisational SLA",  "Schedule during routine maintenance. Formal risk acceptance required if >180 days."],
+        ["Classification", "Target", "Source", "Meaning"],
+        ["CISA KEV", "Entry-specific dueDate", "CISA BOD 22-01", "Binding on FCEB agencies; prioritization guidance elsewhere."],
+        ["CRITICAL", f"{organizational_targets.get('CRITICAL', 'Not configured')} days", "Sample organizational policy", "Operator-configurable; not attributed to NIST."],
+        ["HIGH", f"{organizational_targets.get('HIGH', 'Not configured')} days", "Sample organizational policy", "Operator-configurable; not attributed to NIST."],
+        ["MEDIUM", f"{organizational_targets.get('MEDIUM', 'Not configured')} days", "Sample organizational policy", "Operator-configurable; not attributed to NIST."],
+        ["LOW", f"{organizational_targets.get('LOW', 'Not configured')} days", "Sample organizational policy", "Operator-configurable; not attributed to NIST."],
     ]
 
     row_style_commands = [
@@ -435,16 +455,6 @@ def _build_remediation_section(
         ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
         ("BACKGROUND", (0, 1), (0, 1), colors.HexColor("#4A0082")),
         ("TEXTCOLOR",  (0, 1), (0, 1), colors.white),
-        ("BACKGROUND", (0, 2), (0, 2), _C_KEV),
-        ("TEXTCOLOR",  (0, 2), (0, 2), colors.white),
-        ("BACKGROUND", (0, 3), (0, 3), _C_CRITICAL),
-        ("TEXTCOLOR",  (0, 3), (0, 3), colors.white),
-        ("BACKGROUND", (0, 4), (0, 4), _C_HIGH),
-        ("TEXTCOLOR",  (0, 4), (0, 4), colors.white),
-        ("BACKGROUND", (0, 5), (0, 5), _C_MEDIUM),
-        ("TEXTCOLOR",  (0, 5), (0, 5), _C_NAVY),
-        ("BACKGROUND", (0, 6), (0, 6), _C_LOW),
-        ("TEXTCOLOR",  (0, 6), (0, 6), colors.white),
         ("FONTNAME",   (0, 1), (0, -1), "Helvetica-Bold"),
         ("FONTSIZE",   (0, 0), (-1, -1), 7),
     ]
@@ -466,6 +476,7 @@ def generate_pdf_report(
     kev_count: int = 0,
     kev_catalog_version: str = "N/A",
     output_dir: Path = OUTPUT_DIR,
+    organizational_targets: dict[str, int] | None = None,
 ) -> Path:
     """Generate a PDF risk report and return the output file path.
 
@@ -488,8 +499,9 @@ def generate_pdf_report(
         Absolute path to the generated PDF.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
+    organizational_targets = organizational_targets or DEFAULT_ORGANIZATIONAL_TARGETS.copy()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = output_dir / f"VulnScan_Report_{timestamp}.pdf"
+    output_path = output_dir / f"NVD_Correlation_Report_{timestamp}.pdf"
 
     doc = SimpleDocTemplate(
         str(output_path),
@@ -498,20 +510,20 @@ def generate_pdf_report(
         leftMargin=18 * mm,
         topMargin=18 * mm,
         bottomMargin=18 * mm,
-        title="Automated Vulnerability Scan Report",
-        author="NVD-VulnScanner",
+        title="Inventory-to-NVD Candidate Correlation Report",
+        author="NVD Inventory Correlation Helper",
     )
 
     styles = _build_styles()
     story: list = []
 
     # ---- Title block ------------------------------------------------------- #
-    story.append(Paragraph("Automated Vulnerability Scan Report", styles["title"]))
+    story.append(Paragraph("Inventory-to-NVD Candidate Correlation Report", styles["title"]))
     story.append(
         Paragraph(
             f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  |  "
-            f"Assets Scanned: {len(list(assets))}  |  "
-            f"CVEs Identified: {len(cves)}  |  "
+            f"Inventory records: {len(list(assets))}  |  "
+            f"Candidate CVEs from reviewed mappings: {len(cves)}  |  "
             f"KEV Matches: {kev_count}  |  "
             f"CISA KEV Catalog: {kev_catalog_version}",
             styles["subtitle"],
@@ -528,7 +540,7 @@ def generate_pdf_report(
     story.append(Spacer(1, 5 * mm))
 
     # ---- Executive summary ------------------------------------------------- #
-    _build_summary_section(cves, kev_count, styles, story)
+    _build_summary_section(cves, kev_count, organizational_targets, styles, story)
     story.append(Spacer(1, 5 * mm))
 
     # ---- Asset inventory --------------------------------------------------- #
@@ -536,22 +548,21 @@ def generate_pdf_report(
     story.append(Spacer(1, 5 * mm))
 
     # ---- Full CVE detail --------------------------------------------------- #
-    _build_cve_detail_section(cves, styles, story)
+    _build_cve_detail_section(cves, organizational_targets, styles, story)
     story.append(Spacer(1, 5 * mm))
 
     # ---- Remediation reference --------------------------------------------- #
-    _build_remediation_section(styles, story)
+    _build_remediation_section(organizational_targets, styles, story)
     story.append(Spacer(1, 6 * mm))
 
     # ---- Footer ------------------------------------------------------------ #
     story.append(HRFlowable(width="100%", thickness=0.4, color=_C_RULE))
     story.append(
         Paragraph(
-            f"CONFIDENTIAL — Automated Vulnerability Scan Report  |  "
+            f"REVIEW REQUIRED — Candidate correlation report  |  "
             f"Data source: NIST NVD API v2 + CISA KEV Catalog  |  "
             f"Generated: {datetime.now().strftime('%Y-%m-%d')}  |  "
-            f"This report requires review by a qualified security professional "
-            f"prior to remediation action.",
+            f"CPE mappings, CVE applicability, and remediation decisions require authorized human review.",
             styles["footer"],
         )
     )

@@ -1,22 +1,11 @@
-"""
-scanner.models
-==============
-Core domain dataclasses shared across all scanner modules.
-
-Design notes (Backend Architect)
----------------------------------
-- Dataclasses are frozen where mutation is not required so they are safe
-  to cache and pass across async task boundaries without defensive copying.
-- KEVEntry is kept separate from CVERecord so the cross-reference step is
-  an explicit enrichment pass, not an implicit side-effect of the NVD fetch.
-- SLA logic lives on CVERecord so report.py stays free of business-rule
-  conditionals — the model owns its own priority semantics.
-"""
+"""Domain models for the inventory-to-NVD/KEV correlation helper."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Optional
+
+_CPE_PREFIX = "cpe:2.3:"
 
 
 # ---------------------------------------------------------------------------
@@ -41,37 +30,36 @@ class KEVEntry:
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class SoftwareAsset:
-    """Represents a single installed software record from an asset inventory.
-
-    In production this is populated from WMI (Win32_Product), SCCM software
-    inventory, or a CMDB export. For this project the source is either the
-    built-in simulated inventory or an operator-supplied CSV.
-    """
+    """One software inventory record plus its reviewable CPE mapping state."""
 
     host: str
     vendor: str
     product: str
     version: str
+    reviewed_cpe: str | None = None
+    mapping_source: str | None = None
+    candidate_cpes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.reviewed_cpe and not self.reviewed_cpe.startswith(_CPE_PREFIX):
+            raise ValueError("reviewed_cpe must be a CPE 2.3 name")
+        if self.reviewed_cpe and self.reviewed_cpe.count(":") != 12:
+            raise ValueError("reviewed_cpe must contain all CPE 2.3 components")
+        if self.reviewed_cpe and not self.mapping_source:
+            raise ValueError("mapping_source is required with reviewed_cpe")
 
     @property
     def cpe_string(self) -> str:
-        """Construct a CPE 2.3 formatted string for NVD API lookup.
+        """Return only an explicitly reviewed CPE; never synthesize one."""
+        return self.reviewed_cpe or "unresolved"
 
-        Normalisation rules applied:
-        - All fields lowercased
-        - Spaces and hyphens replaced with underscores
-        - Version string passed as-is (already normalised by NVD convention)
-
-        Example output:
-            cpe:2.3:a:apache:log4j:2.14.0:*:*:*:*:*:*:*
-        """
-        def _normalise(s: str) -> str:
-            return s.lower().replace(" ", "_").replace("-", "_")
-
-        return (
-            f"cpe:2.3:a:{_normalise(self.vendor)}:"
-            f"{_normalise(self.product)}:{self.version}:*:*:*:*:*:*:*"
-        )
+    @property
+    def mapping_status(self) -> str:
+        if self.reviewed_cpe:
+            return "matched"
+        if len(self.candidate_cpes) > 1:
+            return "ambiguous"
+        return "unresolved"
 
     def __str__(self) -> str:
         return f"{self.host} / {self.vendor} {self.product} {self.version}"
@@ -109,25 +97,11 @@ class CVERecord:
         """True if this CVE appears in the CISA KEV catalog."""
         return self.kev_entry is not None
 
-    @property
-    def sla_days(self) -> int:
-        """Patch SLA in calendar days.
-
-        Priority ordering:
-        1. CISA BOD 22-01 KEV items → 14 days (federal mandate baseline)
-        2. CVSS Critical (non-KEV) → 30 days
-        3. CVSS High → 60 days
-        4. CVSS Medium → 90 days
-        5. CVSS Low / Unknown → 180 days
-        """
+    def target_days(self, organizational_targets: dict[str, int]) -> int | None:
+        """Return an optional sample organizational target for non-KEV items."""
         if self.is_kev:
-            return 14
-        return {
-            "CRITICAL": 30,
-            "HIGH": 60,
-            "MEDIUM": 90,
-            "LOW": 180,
-        }.get(self.cvss_severity.upper(), 180)
+            return None
+        return organizational_targets.get(self.cvss_severity.upper())
 
     @property
     def severity_rank(self) -> int:

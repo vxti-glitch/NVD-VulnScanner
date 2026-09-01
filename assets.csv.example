@@ -1,6 +1,4 @@
-host,vendor,product,version
-WS-FINANCE-01,adobe,acrobat_reader,2020.001.30005
-WS-HR-02,apache,log4j,2.14.0
-SRV-WEB-01,apache,http_server,2.4.49
-SRV-DB-01,oracle,mysql,5.7.35
-WS-OPS-03,putty,putty,0.73
+host,vendor,product,version,reviewed_cpe,mapping_source,candidate_cpes
+LAB-WS-01,Apache,Log4j,2.14.0,cpe:2.3:a:apache:log4j:2.14.0:*:*:*:*:*:*:*,NVD CPE Dictionary review,
+LAB-SRV-01,Example Vendor,Unmapped Product,1.0,,,
+LAB-WS-02,Example,Ambiguous Agent,2.0,,,cpe:2.3:a:example:agent:2.0:*:*:*:*:*:*:*|cpe:2.3:a:example:agent_pro:2.0:*:*:*:*:*:*:*

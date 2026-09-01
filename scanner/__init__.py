@@ -1,5 +1,5 @@
 """
-scanner — Automated Vulnerability & Asset Scanner package.
+Candidate CVE correlation package for reviewed software-to-CPE mappings.
 
 Modules
 -------
